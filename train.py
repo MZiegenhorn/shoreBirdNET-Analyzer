@@ -3,19 +3,18 @@
 Can be used to train a custom classifier with new training data.
 """
 import argparse
-import multiprocessing
 import os
+import tqdm
+import multiprocessing
 from functools import partial
 from multiprocessing.pool import Pool
 
 import numpy as np
-import tqdm
 
 import audio
 import config as cfg
 import model
 import utils
-
 
 def _loadAudioFile(f, label_vector, config):
     """Load an audio file and extract features.
@@ -35,15 +34,14 @@ def _loadAudioFile(f, label_vector, config):
     # Try to load the audio file
     try:
         # Load audio
-        sig, rate = audio.openAudioFile(f, duration=cfg.SIG_LENGTH if cfg.SAMPLE_CROP_MODE == "first" else None, fmin=cfg.BANDPASS_FMIN, fmax=cfg.BANDPASS_FMAX)
+        sig, rate = audio.openAudioFile(f, sample_rate = cfg.SAMPLE_RATE, duration=cfg.SIG_LENGTH if cfg.SAMPLE_CROP_MODE == "first" else None, fmin=cfg.BANDPASS_FMIN, fmax=cfg.BANDPASS_FMAX)
 
     # if anything happens print the error and ignore the file
     except Exception as e:
         # Print Error
         print(f"\t Error when loading file {f}", flush=True)
-        print(f"\t {e}", flush=True)
-        return np.array([]), np.array([])
-
+        pass
+       
     # Crop training samples
     if cfg.SAMPLE_CROP_MODE == "center":
         sig_splits = [audio.cropCenter(sig, rate, cfg.SIG_LENGTH)]
@@ -115,9 +113,9 @@ def _loadTrainingData(cache_mode="none", cache_file="", progress_callback=None):
     # Validate the classes for binary classification
     if cfg.BINARY_CLASSIFICATION:
         if len([l for l in folders if l.startswith("-")]) > 0:
-            raise Exception("Negative labels can't be used with binary classification", "validation-no-negative-samples-in-binary-classification")
-        if len([l for l in folders if l.lower() in cfg.NON_EVENT_CLASSES]) == 0:
-            raise Exception("Non-event samples are required for binary classification", "validation-non-event-samples-required-in-binary-classification")
+            raise Exception("Negative labels cant be used with binary classification")
+        if len([l for l in folders if l in cfg.NON_EVENT_CLASSES]) == 0:
+            raise Exception("Non-event samples are required for binary classification")
 
     # Check if multi label
     cfg.MULTI_LABEL = len(valid_labels) > 1 and any(',' in f for f in folders)
@@ -128,7 +126,7 @@ def _loadTrainingData(cache_mode="none", cache_file="", progress_callback=None):
 
     # Only allow repeat upsampling for multi-label setting
     if cfg.MULTI_LABEL and cfg.UPSAMPLING_RATIO > 0 and cfg.UPSAMPLING_MODE != 'repeat':
-        raise Exception("Only repeat-upsampling ist available for multi-label", "validation-only-repeat-upsampling-for-multi-label")
+        raise Exception("Only repeat-upsampling ist available for multi-label")
 
     # Load training data
     x_train = []
@@ -170,12 +168,8 @@ def _loadTrainingData(cache_mode="none", cache_file="", progress_callback=None):
             with tqdm.tqdm(total=len(tasks), desc=f" - loading '{folder}'", unit='f') as progress_bar:
                 for task in tasks:
                     result = task.get()
-                    # Make sure result is not empty 
-                    # Empty results might be caused by errors when loading the audio file
-                    # TODO: We should check for embeddings size in result, otherwise we can't add them to the training data
-                    if len(result[0]) > 0:                        
-                        x_train += result[0]
-                        y_train += result[1]
+                    x_train += result[0]
+                    y_train += result[1]
                     num_files_processed += 1
                     progress_bar.update(1)
                     if progress_callback:
@@ -198,7 +192,7 @@ def _loadTrainingData(cache_mode="none", cache_file="", progress_callback=None):
     return x_train, y_train, valid_labels
 
 
-def trainModel(on_epoch_end=None, on_trial_result=None, on_data_load_end=None, autotune_directory="autotune"):
+def trainModel(on_epoch_end=None, on_trial_result=None, on_data_load_end=None):
     """Trains a custom classifier.
 
     Args:
@@ -214,10 +208,9 @@ def trainModel(on_epoch_end=None, on_trial_result=None, on_data_load_end=None, a
     print(f"...Done. Loaded {x_train.shape[0]} training samples and {y_train.shape[1]} labels.", flush=True)
 
     if cfg.AUTOTUNE:
-        import gc
-
-        import keras
         import keras_tuner
+        import keras
+        import gc
 
         # Call callback to initialize progress bar
         if on_trial_result:
@@ -225,13 +218,7 @@ def trainModel(on_epoch_end=None, on_trial_result=None, on_data_load_end=None, a
 
         class BirdNetTuner(keras_tuner.BayesianOptimization):
             def __init__(self, x_train, y_train, max_trials, executions_per_trial, on_trial_result):
-                super().__init__(
-                    max_trials=max_trials,
-                    executions_per_trial=executions_per_trial,
-                    overwrite=True,
-                    directory=autotune_directory,
-                    project_name="birdnet_analyzer"
-                )
+                super().__init__(max_trials=max_trials, executions_per_trial=executions_per_trial, overwrite=True, directory="autotune", project_name="birdnet_analyzer")
                 self.x_train = x_train
                 self.y_train = y_train
                 self.on_trial_result = on_trial_result
@@ -254,7 +241,6 @@ def trainModel(on_epoch_end=None, on_trial_result=None, on_data_load_end=None, a
 
                     # Only allow repeat upsampling in multi-label setting
                     upsampling_choices = ['repeat', 'mean', 'linear'] #SMOTE is too slow
-
                     if cfg.MULTI_LABEL:
                         upsampling_choices = ['repeat']
 
@@ -396,7 +382,7 @@ if __name__ == "__main__":
     # Config
     cfg.TRAIN_DATA_PATH = args.i
     cfg.SAMPLE_CROP_MODE = args.crop_mode
-    cfg.SIG_OVERLAP = max(0.0, min(2.9, float(args.crop_overlap)))
+    cfg.SIG_OVERLAP = args.crop_overlap
     cfg.CUSTOM_CLASSIFIER = args.o
     cfg.TRAIN_EPOCHS = args.epochs
     cfg.TRAIN_BATCH_SIZE = args.batch_size
